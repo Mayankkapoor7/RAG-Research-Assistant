@@ -1,4 +1,4 @@
-# Papeer — Research Paper Assistant
+# Agentic RAG Research Paper Assistant
 
 A conversational AI assistant for students and researchers to upload, explore, and verify academic papers through natural language chat.
 
@@ -6,7 +6,7 @@ A conversational AI assistant for students and researchers to upload, explore, a
 
 ## Project Description
 
-Papeer is a Retrieval-Augmented Generation (RAG) application built with LangGraph, LangChain, and Streamlit. Users upload research papers (PDF, TXT, Markdown, web URL, or ArXiv ID) into isolated sessions, then ask questions about them. The system routes each query intelligently — answering directly from paper content, searching the web for current developments, or verifying whether a claim from a paper has been superseded by newer research.
+This is a Retrieval-Augmented Generation (RAG) application built with LangGraph, LangChain, and Streamlit. Users upload research papers (PDF, TXT, Markdown, web URL, or ArXiv ID) into isolated sessions, then ask questions about them. The system routes each query intelligently — answering directly from paper content, searching the web for current developments, or verifying whether a claim from a paper has been superseded by newer research.
 
 ---
 
@@ -65,12 +65,12 @@ Prefix any message with `/btw` to ask a question outside the current paper conte
 
 ## Installation
 
-Papeer uses [uv](https://github.com/astral-sh/uv) for dependency management.
+The RAG Assistant uses [uv](https://github.com/astral-sh/uv) for dependency management.
 
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd rag-papeer-project
+cd rag--project
 
 # Install all dependencies
 uv sync
@@ -152,7 +152,7 @@ User Query
 | Optimization | Details |
 |---|---|
 | **Embedding cache** | `CacheBackedEmbeddings` writes to `./embedding_cache/` so identical text is never re-embedded across sessions — reduces OpenAI API calls and latency |
-| **Session isolation** | Each session gets its own Qdrant collection (`papeer_{session_id}`) and a separate LangGraph SQLite checkpointer thread — prevents cross-session data leakage |
+| **Session isolation** | Each session gets its own Qdrant collection (`assistant_{session_id}`) and a separate LangGraph SQLite checkpointer thread — prevents cross-session data leakage |
 | **Graph caching** | The LangGraph graph is built once with `@st.cache_resource` and reused across all Streamlit reruns |
 | **Streaming responses** | `graph.stream()` is used with message mode so responses appear token-by-token rather than waiting for the full generation |
 | **Session persistence** | `sessions.json` persists session metadata; SQLite stores full conversation state — app restarts restore the previous session seamlessly |
@@ -178,7 +178,7 @@ User Query
 
 ## Evaluation
 
-Papeer includes an automated RAG evaluation pipeline (`evaluate.py`) built on [DeepEval](https://github.com/confident-ai/deepeval).
+The Research Assistant includes an automated RAG evaluation pipeline (`evaluate.py`) built on [DeepEval](https://github.com/confident-ai/deepeval).
 
 ### Metrics (threshold: 0.7)
 

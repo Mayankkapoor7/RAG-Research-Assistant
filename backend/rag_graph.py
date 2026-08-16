@@ -142,3 +142,62 @@ def web_search(
 RETRIEVAL_TOOLS = [retrieve_from_vectorstore, web_search]
 retrieval_llm = llm.bind_tools(RETRIEVAL_TOOLS, parallel_tool_calls=False) # You are only allowed to call ONE tool per turn
 base_tool_node = ToolNode(RETRIEVAL_TOOLS) # This will execute the tool calls, This is the retrieval node
+
+
+RETRIEVE_SYSTEM = (
+    "You are a research assistant gathering context to answer a user's question about research papers.\n\n"
+    "You have two tools available and full control over how you use them:\n\n"
+    "1. retrieve_from_vectorstore — searches the uploaded paper collection.\n"
+    "   You decide:\n"
+    "   - query: the semantic search query (phrase it to best match relevant paper chunks)\n"
+    "   - k: how many chunks to retrieve (1–10; use more for broad questions, fewer for specific ones)\n\n"
+    "2. web_search — searches the live web via Tavily.\n"
+    "   You decide:\n"
+    "   - optimized_query: rewrite the user's question as a concise, keyword-rich web search query\n"
+    "   - max_results: how many results to fetch (1–10)\n\n"
+    "Choose the right source based on the question:\n"
+    "- Questions about the uploaded papers → use retrieve_from_vectorstore\n"
+    "- Questions about current events, recent developments, or supplementary information → use web_search\n"
+    "- Call only one tool per turn.\n\n"
+    "Do NOT produce a final answer. Only call tools to collect context."
+)
+
+
+# ── Relevancy check ───────────────────────────────────────────────────────────
+
+RELEVANCY_CHECK_SYSTEM = (
+    "You are evaluating whether retrieved document chunks are relevant enough "
+    "to answer a user's question about research papers.\n\n"
+    "Return is_relevant=true if the chunks contain information that meaningfully "
+    "addresses the question — even partially. "
+    "Return is_relevant=false only if the chunks are clearly off-topic or contain "
+    "no useful information.\n\nBe lenient: if there is any substantive overlap, return true."
+)
+
+relevancy_llm = llm.with_structured_output(RelevancyDecision)
+
+QUERY_REWRITE_SYSTEM = (
+    "You are a query rewriting assistant for a research paper retrieval system. "
+    "The previous query failed to retrieve relevant document chunks. "
+    "Rewrite the query using more specific or alternative terminology, "
+    "domain-specific keywords, or a narrower sub-question.\n\n"
+    "Return ONLY the rewritten query as plain text. No explanation, no preamble."
+)
+
+
+# ── Nodes ─────────────────────────────────────────────────────────────────────
+
+def agent_node(state: RAGState) -> dict:
+    current_attempts = state.get("retrieval_attempts", 0)
+    # Once at the cap, use plain LLM so the agent cannot emit more tool calls.
+    # This prevents orphaned tool_call IDs from entering the persisted message history.
+    # retrieval llm --> tool call --> tool result
+    # llm --> no tools are bounded --> tool call
+    lm = llm if current_attempts >= MAX_RETRIEVAL_ATTEMPTS else retrieval_llm
+    messages = [{"role": "system", "content": RETRIEVE_SYSTEM}] + state["messages"]
+    response = lm.invoke(messages)
+    updates: dict = {"messages": [response]}
+    if getattr(response, "tool_calls", None):
+        updates["retrieval_attempts"] = current_attempts + 1
+    return updates
+

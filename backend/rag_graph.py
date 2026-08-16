@@ -201,3 +201,20 @@ def agent_node(state: RAGState) -> dict:
         updates["retrieval_attempts"] = current_attempts + 1
     return updates
 
+
+def relevancy_check_node(state: RAGState) -> dict:
+    query = state["query"]
+    docs = state.get("retrieved_docs") or []
+    doc_snippets = "\n\n---\n\n".join(doc.page_content[:300] for doc in docs[:3])
+    if not doc_snippets:
+        return {"is_relevant": False}
+    prompt = (
+        f"Question: {query}\n\nRetrieved chunks:\n{doc_snippets}\n\n"
+        "Are these chunks relevant to answering the question?"
+    )
+    decision: RelevancyDecision = relevancy_llm.invoke([
+        {"role": "system", "content": RELEVANCY_CHECK_SYSTEM},
+        {"role": "user", "content": prompt},
+    ])
+    return {"is_relevant": decision.is_relevant}
+

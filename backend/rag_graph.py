@@ -304,3 +304,56 @@ def verify_claim_node(state: RAGState) -> dict:
         "superseding_papers": papers_dicts,
     }
 
+
+def generate_answer_node(state: RAGState) -> dict:
+    route = state.get("route")
+    query = state["query"]
+
+    if route == "retrieve":
+        if state.get("is_relevant") is False and state.get("rewrite_count", 0) >= 1:
+            answer = (
+                "I wasn't able to find relevant information in the uploaded papers "
+                "to answer your question. You may want to rephrase your question "
+                "or upload additional papers."
+            )
+        else:
+            docs = state.get("retrieved_docs") or []
+            if not docs:
+                answer = "I don't know the answer."
+            else:
+                context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+                prompt = f"Answer the question using this context:\n\n{context}\n\nQuestion: {query}"
+                answer = llm.invoke([{"role": "user", "content": prompt}]).content
+
+    elif route == "verify_claim":
+        verdict = state.get("claim_verdict", "")
+        papers = state.get("superseding_papers") or []
+        claim_text = state["query"]
+        if papers:
+            papers_block = "\n\n".join(
+                f"{i + 1}. **{p['title']}**\n   {p['summary']}\n   Link: {p['url']}"
+                for i, p in enumerate(papers)
+            )
+            answer = (
+                f"**Claim Verification Result**\n\n"
+                f"> {claim_text}\n\n"
+                f"**Verdict:** {verdict}\n\n"
+                f"**Superseding Papers:**\n\n{papers_block}\n\n"
+                f"---\n"
+                f"*You can load any of these papers into your knowledge base "
+                f"to continue your research with the latest findings.*"
+            )
+        else:
+            answer = (
+                f"**Claim Verification Result**\n\n"
+                f"> {claim_text}\n\n"
+                f"**Verdict:** {verdict}\n\n"
+                f"*No papers directly superseding this claim were found in recent literature.*"
+            )
+
+    else:  # direct_answer
+        prompt = f"Answer from your knowledge.\n\nQuestion: {query}"
+        answer = llm.invoke([{"role": "user", "content": prompt}]).content
+
+    return {"answer": answer, "messages": [AIMessage(content=answer)]}
+

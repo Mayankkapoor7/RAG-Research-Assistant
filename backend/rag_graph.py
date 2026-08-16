@@ -218,3 +218,21 @@ def relevancy_check_node(state: RAGState) -> dict:
     ])
     return {"is_relevant": decision.is_relevant}
 
+
+def query_rewrite_node(state: RAGState) -> dict:
+    original_query = state["query"]
+    rewrite_count = state.get("rewrite_count", 0)
+    response = llm.invoke([
+        {"role": "system", "content": QUERY_REWRITE_SYSTEM},
+        {"role": "user", "content": f"Original query: {original_query}\n\nWrite an improved search query."},
+    ])
+    rewritten = response.content.strip()
+    return {
+        "messages": [HumanMessage(content=rewritten)],
+        "query": rewritten,
+        "retrieved_docs": [], # We want the agent node to restart, discard the irrelevant documents
+        "retrieval_attempts": 0,
+        "rewrite_count": rewrite_count + 1,
+        "is_relevant": None,
+    }
+

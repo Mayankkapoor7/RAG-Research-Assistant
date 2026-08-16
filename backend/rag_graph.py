@@ -236,3 +236,71 @@ def query_rewrite_node(state: RAGState) -> dict:
         "is_relevant": None,
     }
 
+
+CLAIM_ANALYSIS_PROMPT = (
+    "You are a research fact-checker. Given a claim from a research paper and "
+    "a set of recent web and arXiv search results, determine:\n"
+    "1. Has this claim been superseded, significantly challenged, or updated by more recent work?\n"
+    "2. Identify up to 3 papers from the provided results that supersede or update the claim.\n\n"
+    "Rules:\n"
+    "- Use ONLY titles and URLs that appear verbatim in the provided search results.\n"
+    "- Prefer arXiv paper links (arxiv.org) over general web links when available.\n"
+    "- For each superseding paper, write one sentence explaining how it supersedes the claim.\n"
+    "- If the claim still holds, set is_superseded=false and return an empty superseding_papers list.\n"
+    "- verdict_summary should be 1-2 sentences suitable for display to the user."
+)
+
+verification_llm = llm.with_structured_output(ClaimVerificationResult)
+
+
+def verify_claim_node(state: RAGState) -> dict:
+    claim = state["messages"][-1].content
+    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+    # General web search for recent work superseding the claim
+    general_results = tavily_client.search(
+        f"recent research superseding: {claim[:200]}",
+        max_results=5,
+    ).get("results", [])
+
+    # arXiv-targeted search via web to get paper titles and links
+    arxiv_results = tavily_client.search(
+        f"site:arxiv.org {claim[:200]}",
+        max_results=5,
+    ).get("results", [])
+
+    # Build context block
+    lines = ["=== General Web Search Results ==="]
+    for r in general_results:
+        lines.append(
+            f"Title: {r.get('title', '')}\n"
+            f"URL: {r['url']}\n"
+            f"Snippet: {r.get('content', '')[:300]}\n"
+        )
+
+    lines.append("=== arXiv Paper Search Results ===")
+    for r in arxiv_results:
+        lines.append(
+            f"Title: {r.get('title', '')}\n"
+            f"URL: {r['url']}\n"
+            f"Snippet: {r.get('content', '')[:300]}\n"
+        )
+
+    context = "\n".join(lines)
+
+    prompt = (
+        f"{CLAIM_ANALYSIS_PROMPT}\n\n"
+        f"Claim to verify:\n{claim}\n\n"
+        f"Search Results:\n{context}"
+    )
+    result: ClaimVerificationResult = verification_llm.invoke([
+        {"role": "user", "content": prompt}
+    ])
+
+    papers_dicts = [p.model_dump() for p in result.superseding_papers[:3]]
+    return {
+        "claim_verdict": result.verdict_summary,
+        "claim_source": papers_dicts[0]["url"] if papers_dicts else None,
+        "superseding_papers": papers_dicts,
+    }
+

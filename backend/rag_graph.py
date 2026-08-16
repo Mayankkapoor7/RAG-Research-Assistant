@@ -357,3 +357,8 @@ def generate_answer_node(state: RAGState) -> dict:
 
     return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
+
+# ── Graph ─────────────────────────────────────────────────────────────────────
+
+MAX_RETRIEVAL_ATTEMPTS = 3
+

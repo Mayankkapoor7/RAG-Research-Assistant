@@ -263,13 +263,12 @@ def verify_claim_node(state: RAGState) -> dict:
         max_results=5,
     ).get("results", [])
 
-    # arXiv-targeted search via web to get paper titles and links
+
     arxiv_results = tavily_client.search(
         f"site:arxiv.org {claim[:200]}",
         max_results=5,
     ).get("results", [])
 
-    # Build context block
     lines = ["=== General Web Search Results ==="]
     for r in general_results:
         lines.append(
@@ -351,7 +350,7 @@ def generate_answer_node(state: RAGState) -> dict:
                 f"*No papers directly superseding this claim were found in recent literature.*"
             )
 
-    else:  # direct_answer
+    else: 
         prompt = f"Answer from your knowledge.\n\nQuestion: {query}"
         answer = llm.invoke([{"role": "user", "content": prompt}]).content
 
@@ -384,7 +383,7 @@ def after_relevancy_routing(state: RAGState) -> str:
         return "query_rewrite"
     return "generate_answer"
 
-
+# Created the checkpointer
 def build_graph(db_path: str = "checkpoints.db"):
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)

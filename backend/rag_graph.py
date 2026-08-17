@@ -384,3 +384,17 @@ def after_relevancy_routing(state: RAGState) -> str:
         return "query_rewrite"
     return "generate_answer"
 
+
+def build_graph(db_path: str = "checkpoints.db"):
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    checkpointer = SqliteSaver(conn)
+
+    graph = StateGraph(RAGState)
+    graph.add_node("router", router_node)
+    graph.add_node("agent_node", agent_node)
+    graph.add_node("retrieval", base_tool_node)
+    graph.add_node("relevancy_check", relevancy_check_node)
+    graph.add_node("query_rewrite", query_rewrite_node)
+    graph.add_node("verify_claim", verify_claim_node)
+    graph.add_node("generate_answer", generate_answer_node)
+

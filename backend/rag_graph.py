@@ -376,3 +376,11 @@ def agent_routing(state: RAGState) -> str:
         return "generate_answer"
     return "relevancy_check"
 
+
+def after_relevancy_routing(state: RAGState) -> str:
+    if state.get("is_relevant", False):
+        return "generate_answer"
+    if state.get("rewrite_count", 0) < 1:
+        return "query_rewrite"
+    return "generate_answer"
+

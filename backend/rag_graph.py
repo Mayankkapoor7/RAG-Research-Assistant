@@ -398,3 +398,38 @@ def build_graph(db_path: str = "checkpoints.db"):
     graph.add_node("verify_claim", verify_claim_node)
     graph.add_node("generate_answer", generate_answer_node)
 
+    graph.set_entry_point("router")
+
+    graph.add_conditional_edges(
+        "router",
+        route_query,
+        {
+            "retrieve": "agent_node",
+            "verify_claim": "verify_claim",
+            "direct_answer": "generate_answer",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "agent_node",
+        agent_routing, # Run this only if agent_node was called in previous step
+        {
+            "retrieval": "retrieval",
+            "relevancy_check": "relevancy_check",
+            "generate_answer": "generate_answer",
+        },
+    )
+    graph.add_edge("retrieval", "agent_node")
+
+    graph.add_conditional_edges(
+        "relevancy_check",
+        after_relevancy_routing,
+        {"query_rewrite": "query_rewrite", "generate_answer": "generate_answer"},
+    )
+    graph.add_edge("query_rewrite", "agent_node")
+
+    graph.add_edge("verify_claim", "generate_answer")
+    graph.add_edge("generate_answer", END)
+
+    return graph.compile(checkpointer=checkpointer)
+

@@ -360,3 +360,19 @@ def generate_answer_node(state: RAGState) -> dict:
 
 MAX_RETRIEVAL_ATTEMPTS = 3
 
+
+def route_query(state: RAGState) -> str:
+    return state["route"]
+
+
+def agent_routing(state: RAGState) -> str:
+    # Always execute pending tool calls first — shortcutting here would leave
+    # an AIMessage with tool_calls unmatched by ToolMessages in the checkpointer,
+    # corrupting history for all future turns in the same session.
+    tc = tools_condition(state)
+    if tc == "tools":
+        return "retrieval"
+    if state.get("retrieval_attempts", 0) >= MAX_RETRIEVAL_ATTEMPTS:
+        return "generate_answer"
+    return "relevancy_check"
+

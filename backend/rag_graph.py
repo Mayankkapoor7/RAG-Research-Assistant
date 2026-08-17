@@ -24,8 +24,7 @@ from backend.vector_store import search as vs_search
 
 load_dotenv()
 
-llm = ChatOpenAI(model="gpt-3.5-turbo")
-
+llm = ChatOpenAI(model="gpt-4o-mini")
 
 # ── State ─────────────────────────────────────────────────────────────────────
 

@@ -188,3 +188,121 @@ with st.sidebar:
     st.divider()
     st.markdown("## 📄 Documents")
 
+    # ── Section 1: File upload ─────────────────────────────────────────────────
+    st.markdown("**Upload Files**")
+    uploaded_files = st.file_uploader(
+        "PDF, TXT, or Markdown",
+        type=["pdf", "txt", "md", "markdown"],
+        accept_multiple_files=True,
+        key=f"uploader_{active_sid}",
+        label_visibility="collapsed",
+    )
+    if st.button("Add Files", use_container_width=True, key="btn_add_files"):
+        if uploaded_files:
+            processed_key = f"processed_files_{active_sid}"
+            if processed_key not in st.session_state:
+                st.session_state[processed_key] = set()
+            with st.spinner("Processing files…"):
+                for f in uploaded_files:
+                    if f.name in st.session_state[processed_key]:
+                        st.info(f"Already loaded: {f.name}")
+                        continue
+                    suffix = Path(f.name).suffix
+                    tmp_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(f.read())
+                            tmp_path = tmp.name
+                        docs = load_document(tmp_path)
+                        for doc in docs:
+                            doc.metadata["title"] = Path(f.name).stem
+                        add_paper(docs, active_sid)
+                        st.session_state[processed_key].add(f.name)
+                        st.success(f"Added: {f.name}")
+                    except Exception as e:
+                        st.error(f"Failed: {f.name} — {e}")
+                    finally:
+                        if tmp_path:
+                            Path(tmp_path).unlink(missing_ok=True)
+            st.rerun()
+        else:
+            st.warning("No files selected.")
+
+    # ── Section 2: Web URL loader ──────────────────────────────────────────────
+    st.markdown("**Web Pages**")
+    url_input = st.text_area(
+        "URLs (one per line)",
+        key=f"url_area_{active_sid}",
+        height=80,
+        label_visibility="collapsed",
+        placeholder="https://example.com/paper",
+    )
+    if st.button("Load URLs", use_container_width=True, key="btn_load_urls"):
+        urls = [u.strip() for u in url_input.splitlines() if u.strip()]
+        if urls:
+            with st.spinner("Loading web pages…"):
+                for url in urls:
+                    try:
+                        docs = load_webpage(url)
+                        add_paper(docs, active_sid)
+                        st.success(f"Loaded: {url[:60]}")
+                    except Exception as e:
+                        st.error(f"Failed: {url[:60]} — {e}")
+            st.rerun()
+        else:
+            st.warning("Enter at least one URL.")
+
+    # ── Section 3: ArXiv loader ────────────────────────────────────────────────
+    st.markdown("**ArXiv Papers**")
+    arxiv_title = st.text_input(
+        "Paper title or ArXiv ID",
+        key=f"arxiv_input_{active_sid}",
+        label_visibility="collapsed",
+        placeholder="1706.03762  or  Attention Is All You Need",
+    )
+    if st.button("Load ArXiv Paper", use_container_width=True, key="btn_load_arxiv"):
+        if arxiv_title.strip():
+            with st.spinner("Loading from ArXiv…"):
+                try:
+                    docs = load_arxiv(arxiv_title.strip())
+                    add_paper(docs, active_sid)
+                    loaded_title = docs[0].metadata.get("title") if docs else arxiv_title.strip()
+                    st.success(f"Loaded: {loaded_title}")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+            st.rerun()
+        else:
+            st.warning("Enter a paper title or ArXiv ID.")
+
+    # ── Loaded Documents list ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### Loaded Documents")
+    try:
+        doc_titles = list_papers(active_sid)
+    except Exception:
+        doc_titles = None
+    if doc_titles is None:
+        st.caption("Could not load document list — try refreshing.")
+    elif doc_titles:
+        for title in doc_titles:
+            st.markdown(f"- {title}")
+    else:
+        st.caption("No documents loaded yet.")
+
+# ── Page header ────────────────────────────────────────────────────────────────
+st.title("📚 Papeer — Research Paper Assistant")
+st.markdown(
+    "🔍 **Ask questions** from your uploaded papers &nbsp;·&nbsp; "
+    "✅ **Verify claims** against recent literature &nbsp;·&nbsp; "
+    "🌐 **Search the web** for the latest findings\n\n"
+    "> Upload documents in the sidebar and start chatting below."
+)
+st.divider()
+
+# ── Chat display ───────────────────────────────────────────────────────────────
+for msg in st.session_state.chats.get(active_sid, []):
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg["role"] == "assistant":
+            with st.expander(f"📊 Graph state · turn {msg['turn']}", expanded=False):
+                st.json(msg["graph_state"])

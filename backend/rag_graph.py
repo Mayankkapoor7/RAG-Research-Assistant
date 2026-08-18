@@ -11,7 +11,6 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import InjectedToolCallId, tool
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
@@ -21,10 +20,11 @@ from tavily import TavilyClient
 
 from backend.models import ClaimVerificationResult, RelevancyDecision, RouterDecision
 from backend.vector_store import search as vs_search
+from backend.gateway import get_gateway_llm
 
 load_dotenv()
 
-llm = ChatOpenAI(model="gpt-4o-mini")
+llm = get_gateway_llm()
 
 # ── State ─────────────────────────────────────────────────────────────────────
 

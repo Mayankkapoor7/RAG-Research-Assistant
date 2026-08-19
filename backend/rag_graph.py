@@ -18,6 +18,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+from backend.guardrails import REFUSAL_MESSAGE, check_input, check_output
 from backend.models import ClaimVerificationResult, RelevancyDecision, RouterDecision
 from backend.vector_store import search as vs_search
 from backend.gateway import get_gateway_llm
@@ -353,6 +354,11 @@ def generate_answer_node(state: RAGState) -> dict:
         prompt = f"Answer from your knowledge.\n\nQuestion: {query}"
         answer = llm.invoke([{"role": "user", "content": prompt}]).content
 
+    # Output guard — replace answer if it violates the output policy
+    is_safe, _ = check_output(answer)
+    if not is_safe:
+        answer = REFUSAL_MESSAGE
+
     return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
 
@@ -382,6 +388,25 @@ def after_relevancy_routing(state: RAGState) -> str:
         return "query_rewrite"
     return "generate_answer"
 
+# ── Input guard ──────────────────────────────────────────────────────────────
+
+def input_guard_node(state: RAGState) -> dict:
+    """Block unsafe questions before they reach the router."""
+    question = state["messages"][-1].content
+    is_safe, _ = check_input(question)
+    if not is_safe:
+        return {
+            "answer": REFUSAL_MESSAGE,
+            "messages": [AIMessage(content=REFUSAL_MESSAGE)],
+            "route": "blocked",
+        }
+    return {}
+
+
+def after_input_guard(state: RAGState) -> str:
+    return "blocked" if state.get("route") == "blocked" else "router"
+
+
 # Created the checkpointer
 def build_graph(db_path: str = "checkpoints.db"):
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -394,9 +419,16 @@ def build_graph(db_path: str = "checkpoints.db"):
     graph.add_node("relevancy_check", relevancy_check_node)
     graph.add_node("query_rewrite", query_rewrite_node)
     graph.add_node("verify_claim", verify_claim_node)
+    graph.add_node("input_guard", input_guard_node)
     graph.add_node("generate_answer", generate_answer_node)
 
-    graph.set_entry_point("router")
+    graph.set_entry_point("input_guard")
+
+    graph.add_conditional_edges(
+        "input_guard",
+        after_input_guard,
+        {"router": "router", "blocked": END},
+    )
 
     graph.add_conditional_edges(
         "router",

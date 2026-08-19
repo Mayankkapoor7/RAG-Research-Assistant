@@ -10,7 +10,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5}(?:v\d+)?)")
 
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 400
 CHUNK_OVERLAP = 200
 
 _splitter = RecursiveCharacterTextSplitter(
@@ -25,7 +25,6 @@ def _stamp_title(docs: list[Document], title: str) -> list[Document]:
     for doc in docs:
         doc.metadata["title"] = title
     return docs
-
 
 
 def load_pdf(file_path: str) -> list[Document]:

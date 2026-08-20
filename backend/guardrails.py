@@ -12,18 +12,24 @@ import os
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from portkey_ai import createHeaders
 
 load_dotenv()
 
 REFUSAL_MESSAGE = "Sorry, I can't help you with that success."
 
-# ── Guard LLM (routed through Portkey's safety config) ───────────────────────
+_headers = createHeaders(
+    api_key=os.environ["PORTKEY_API_KEY"],
+    config=os.environ["SAFETY_PORTKEY_CONFIG"],
+    cache_force_refresh="True"
+)
+
 
 _guard_llm = ChatOpenAI(
-    api_key=os.environ["PORTKEY_API_KEY"],
+    api_key=os.environ.get("OPENAI_API_KEY", "dummy"),
     base_url=os.environ["PORTKEY_BASE_URL"],
-    default_headers={"x-portkey-config": os.environ["SAFETY_PORTKEY_CONFIG"]},
-    model="gpt-4o-mini",   # overridden by the Portkey config if configured there
+    default_headers=_headers,
+    model="gpt-4o-mini",
     temperature=0,
     model_kwargs={"response_format": {"type": "json_object"}},
 )

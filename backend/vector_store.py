@@ -85,7 +85,7 @@ def list_papers(session_id: str) -> list[str]:
     return titles
 
 
-SIMILARITY_THRESHOLD = 0.9  # chunks below this cosine score are dropped as off-topic
+SIMILARITY_THRESHOLD = 0.5
 
 def search(query: str, session_id: str, k: int = 4) -> list[Document]:
     results = get_vectorstore(session_id).similarity_search_with_score(query, k=k)

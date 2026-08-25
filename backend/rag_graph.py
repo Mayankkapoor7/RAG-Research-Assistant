@@ -41,6 +41,7 @@ class RAGState(MessagesState):
     answer: str | None
     is_relevant: bool | None # context is relevant to query or not
     rewrite_count: int # how many times we reqrote the query
+    conversation_summary: str | None  # rolling summary of turns older than TURNS_TO_KEEP
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -185,7 +186,32 @@ QUERY_REWRITE_SYSTEM = (
 )
 
 
-# ── Nodes ─────────────────────────────────────────────────────────────────────
+# ── Rolling summary helpers ───────────────────────────────────────────────────
+
+TURNS_TO_KEEP = 10  # number of recent human turns to keep verbatim
+
+SUMMARIZE_SYSTEM = (
+    "You are a conversation summarizer for a research paper Q&A assistant. "
+    "Given a conversation history, produce a concise paragraph capturing: "
+    "the topics discussed, key questions asked, papers or claims referenced, "
+    "and important conclusions reached. Be factual and brief."
+)
+
+
+def _split_messages_for_summary(messages: list, turns_to_keep: int = TURNS_TO_KEEP):
+    """Split messages into (old_messages, recent_messages) keyed by HumanMessage turns.
+
+    Returns:
+        old_msgs   – everything before the last `turns_to_keep` human turns
+        recent_msgs – the last `turns_to_keep` turns (all message types included)
+    """
+    human_indices = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if len(human_indices) <= turns_to_keep:
+        return [], messages  # not enough turns to summarise yet
+    cutoff = human_indices[-turns_to_keep]  # index of oldest message to keep verbatim
+    return messages[:cutoff], messages[cutoff:]
+
+
 
 def agent_node(state: RAGState) -> dict:
     current_attempts = state.get("retrieval_attempts", 0)
@@ -194,12 +220,24 @@ def agent_node(state: RAGState) -> dict:
     # retrieval llm --> tool call --> tool result
     # llm --> no tools are bounded --> tool call
     lm = llm if current_attempts >= MAX_RETRIEVAL_ATTEMPTS else retrieval_llm
-    messages = [{"role": "system", "content": RETRIEVE_SYSTEM}] + state["messages"]
+
+    # Use only the recent turn window; prepend rolling summary when available
+    _, recent_msgs = _split_messages_for_summary(state["messages"])
+    system_content = RETRIEVE_SYSTEM
+    summary = state.get("conversation_summary")
+    if summary:
+        system_content = (
+            f"{RETRIEVE_SYSTEM}\n\n"
+            f"## Earlier conversation summary:\n{summary}"
+        )
+
+    messages = [{"role": "system", "content": system_content}] + recent_msgs
     response = lm.invoke(messages)
     updates: dict = {"messages": [response]}
     if getattr(response, "tool_calls", None):
         updates["retrieval_attempts"] = current_attempts + 1
     return updates
+
 
 
 def relevancy_check_node(state: RAGState) -> dict:
@@ -362,6 +400,41 @@ def generate_answer_node(state: RAGState) -> dict:
     return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
 
+def maybe_summarize_node(state: RAGState) -> dict:
+    """After each answer, compress old turns into a rolling summary stored in state.
+
+    The summary lives in RAGState.conversation_summary and is automatically
+    persisted to checkpoints.db by SqliteSaver — no separate storage needed.
+    Only runs once the conversation exceeds TURNS_TO_KEEP human turns.
+    """
+    messages = state.get("messages", [])
+    old_msgs, _ = _split_messages_for_summary(messages)
+    if not old_msgs:
+        return {}  # fewer than TURNS_TO_KEEP turns — nothing to summarise yet
+
+    existing_summary = state.get("conversation_summary")
+    old_text = "\n".join(
+        f"{type(m).__name__}: {m.content[:400]}"
+        for m in old_msgs
+        if hasattr(m, "content") and isinstance(m.content, str) and m.content.strip()
+    )
+
+    if existing_summary:
+        prompt = (
+            f"Existing summary:\n{existing_summary}\n\n"
+            f"Older conversation to incorporate:\n{old_text}\n\n"
+            "Update the summary to include the older messages above."
+        )
+    else:
+        prompt = f"Summarize this research assistant conversation:\n\n{old_text}"
+
+    summary_response = llm.invoke([
+        {"role": "system", "content": SUMMARIZE_SYSTEM},
+        {"role": "user", "content": prompt},
+    ])
+    return {"conversation_summary": summary_response.content}
+
+
 MAX_RETRIEVAL_ATTEMPTS = 3
 
 
@@ -421,6 +494,7 @@ def build_graph(db_path: str = "checkpoints.db"):
     graph.add_node("verify_claim", verify_claim_node)
     graph.add_node("input_guard", input_guard_node)
     graph.add_node("generate_answer", generate_answer_node)
+    graph.add_node("maybe_summarize", maybe_summarize_node)
 
     graph.set_entry_point("input_guard")
 
@@ -459,7 +533,8 @@ def build_graph(db_path: str = "checkpoints.db"):
     graph.add_edge("query_rewrite", "agent_node")
 
     graph.add_edge("verify_claim", "generate_answer")
-    graph.add_edge("generate_answer", END)
+    graph.add_edge("generate_answer", "maybe_summarize")
+    graph.add_edge("maybe_summarize", END)
 
     return graph.compile(checkpointer=checkpointer)
 

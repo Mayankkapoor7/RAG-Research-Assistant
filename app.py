@@ -304,6 +304,9 @@ for msg in st.session_state.chats.get(active_sid, []):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg["role"] == "assistant":
+            source = msg.get("source")
+            if source:
+                st.caption(f"Source: {source}")
             with st.expander(f"📊 Graph state · turn {msg['turn']}", expanded=False):
                 st.json(msg["graph_state"])
 
@@ -387,6 +390,10 @@ if prompt := st.chat_input("Ask about your papers, verify a claim, or search the
             placeholder.markdown(response_text)
 
             final_values = graph.get_state(config).values
+            answer_source = final_values.get("answer_source")
+            if answer_source:
+                st.caption(f"Source: {answer_source}")
+
             state_snapshot = _serialize_state(final_values)
 
             with st.expander(f"📊 Graph state · turn {current_turn}", expanded=False):
@@ -398,6 +405,7 @@ if prompt := st.chat_input("Ask about your papers, verify a claim, or search the
                 "content": response_text,
                 "graph_state": state_snapshot,
                 "turn": current_turn,
+                "source": answer_source,
             }
         )
 

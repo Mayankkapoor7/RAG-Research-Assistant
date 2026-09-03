@@ -22,6 +22,8 @@ from backend.guardrails import REFUSAL_MESSAGE, check_input, check_output
 from backend.models import ClaimVerificationResult, RelevancyDecision, RouterDecision
 from backend.vector_store import search as vs_search
 from backend.gateway import get_gateway_llm
+from backend import redis_cache
+from backend.redis_cache import REDIS_HIT_THRESHOLD, REDIS_MISS_THRESHOLD
 
 load_dotenv()
 
@@ -42,6 +44,8 @@ class RAGState(MessagesState):
     is_relevant: bool | None # context is relevant to query or not
     rewrite_count: int # how many times we reqrote the query
     conversation_summary: str | None  # rolling summary of turns older than TURNS_TO_KEEP
+    cache_score: float | None  # cosine similarity score from Redis semantic cache lookup
+    answer_source: str | None    # human-readable label: where the answer came from
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -342,9 +346,29 @@ def verify_claim_node(state: RAGState) -> dict:
     }
 
 
+def _determine_answer_source(route: str | None, docs: list[Document]) -> str:
+    """Map the current route + retrieved docs to a human-readable source label."""
+    if route == "direct_answer":
+        return "🧠 LLM Knowledge"
+    if route == "verify_claim":
+        return "✅ Claim Verification  ·  Web Search"
+    if route == "retrieve":
+        has_web = any(doc.metadata.get("url") for doc in docs)
+        has_paper = any(not doc.metadata.get("url") for doc in docs)
+        if has_web and has_paper:
+            return "📄 Research Papers  ·  🌐 Web Search"
+        if has_web:
+            return "🌐 Web Search"
+        if has_paper:
+            return "📄 Research Papers"
+        return "📄 Research Papers"  # fallback when docs list is empty
+    return "🧠 LLM Knowledge"
+
+
 def generate_answer_node(state: RAGState) -> dict:
     route = state.get("route")
     query = state["query"]
+    docs = state.get("retrieved_docs") or []
 
     if route == "retrieve":
         if state.get("is_relevant") is False and state.get("rewrite_count", 0) >= 1:
@@ -354,7 +378,6 @@ def generate_answer_node(state: RAGState) -> dict:
                 "or upload additional papers."
             )
         else:
-            docs = state.get("retrieved_docs") or []
             if not docs:
                 answer = "I don't know the answer."
             else:
@@ -388,7 +411,7 @@ def generate_answer_node(state: RAGState) -> dict:
                 f"*No papers directly superseding this claim were found in recent literature.*"
             )
 
-    else: 
+    else:
         prompt = f"Answer from your knowledge.\n\nQuestion: {query}"
         answer = llm.invoke([{"role": "user", "content": prompt}]).content
 
@@ -397,7 +420,8 @@ def generate_answer_node(state: RAGState) -> dict:
     if not is_safe:
         answer = REFUSAL_MESSAGE
 
-    return {"answer": answer, "messages": [AIMessage(content=answer)]}
+    source = _determine_answer_source(route, docs)
+    return {"answer": answer, "messages": [AIMessage(content=answer)], "answer_source": source}
 
 
 def maybe_summarize_node(state: RAGState) -> dict:
@@ -477,33 +501,122 @@ def input_guard_node(state: RAGState) -> dict:
 
 
 def after_input_guard(state: RAGState) -> str:
-    return "blocked" if state.get("route") == "blocked" else "router"
+    return "blocked" if state.get("route") == "blocked" else "redis_cache"
 
 
-# Created the checkpointer
+# ── Redis semantic cache nodes ─────────────────────────────────────────────
+
+def redis_cache_node(state: RAGState) -> dict:
+    """Check Redis for a semantically similar cached answer.
+
+    Outcomes
+    --------
+    HIT  (score >= REDIS_HIT_THRESHOLD)  : set answer + messages, mark route='cache_hit'.
+    MISS (score <  REDIS_MISS_THRESHOLD) : pass through with cache_score recorded.
+    AMBIGUOUS (between thresholds)       : also pass through; freshness wins.
+    """
+    query = state["query"]
+    result = redis_cache.get(query)
+
+    if result is None:
+        # Cache empty or Redis unavailable — treat as miss
+        return {"cache_score": 0.0}
+
+    answer, score = result
+
+    if score >= REDIS_HIT_THRESHOLD:
+        # ── Cache HIT: short-circuit the entire RAG pipeline ──────────────
+        return {
+            "cache_score": score,
+            "answer": answer,
+            "route": "cache_hit",
+            "messages": [AIMessage(content=answer)],
+            "answer_source": f"⚡ Redis Cache  ·  similarity {score:.2f}",
+        }
+
+    # MISS or ambiguous zone — fall through to router
+    return {"cache_score": score}
+
+
+def after_redis_cache(state: RAGState) -> str:
+    """Route to maybe_summarize on cache hit, router otherwise."""
+    return "cache_hit" if state.get("route") == "cache_hit" else "router"
+
+
+def store_to_cache_node(state: RAGState) -> dict:
+    """Persist the freshly generated answer to Redis after the RAG pipeline.
+
+    Skips storage when:
+    - route == 'cache_hit'  (answer came from cache; no need to re-store)
+    - route == 'blocked'    (guardrail refusal; never cache)
+    - answer or query is missing
+    """
+    route = state.get("route")
+    if route in ("cache_hit", "blocked"):
+        return {}
+    answer = state.get("answer")
+    query = state.get("query")
+    if answer and query:
+        redis_cache.store(query, answer)
+    return {}
+
+
+# ── Graph builder ─────────────────────────────────────────────────────────────
+
 def build_graph(db_path: str = "checkpoints.db"):
+    """Compile the full RAG LangGraph with Redis semantic caching.
+
+    Execution order
+    ───────────────
+    input_guard
+        ↓ (safe)
+    redis_cache_node ──(HIT score ≥ REDIS_HIT_THRESHOLD)──→ maybe_summarize
+        ↓ (MISS / ambiguous)
+    router
+        ↓
+    [retrieve / verify_claim / direct_answer branches]
+        ↓
+    generate_answer
+        ↓
+    store_to_cache          ← persists answer; skips on cache_hit / blocked
+        ↓
+    maybe_summarize → END
+    """
     conn = sqlite3.connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
 
     graph = StateGraph(RAGState)
+
+    # ── Register nodes ────────────────────────────────────────────────────────
+    graph.add_node("input_guard", input_guard_node)
+    graph.add_node("redis_cache_node", redis_cache_node)   # NEW
     graph.add_node("router", router_node)
     graph.add_node("agent_node", agent_node)
     graph.add_node("retrieval", base_tool_node)
     graph.add_node("relevancy_check", relevancy_check_node)
     graph.add_node("query_rewrite", query_rewrite_node)
     graph.add_node("verify_claim", verify_claim_node)
-    graph.add_node("input_guard", input_guard_node)
     graph.add_node("generate_answer", generate_answer_node)
+    graph.add_node("store_to_cache", store_to_cache_node)  # NEW
     graph.add_node("maybe_summarize", maybe_summarize_node)
 
     graph.set_entry_point("input_guard")
 
+    # ── input_guard → redis_cache_node (or END if blocked) ───────────────────
     graph.add_conditional_edges(
         "input_guard",
         after_input_guard,
-        {"router": "router", "blocked": END},
+        {"redis_cache": "redis_cache_node", "blocked": END},
     )
 
+    # ── redis_cache_node → maybe_summarize (HIT) or router (MISS) ────────────
+    graph.add_conditional_edges(
+        "redis_cache_node",
+        after_redis_cache,
+        {"cache_hit": "maybe_summarize", "router": "router"},
+    )
+
+    # ── router → retrieve / verify_claim / direct_answer ─────────────────────
     graph.add_conditional_edges(
         "router",
         route_query,
@@ -514,9 +627,10 @@ def build_graph(db_path: str = "checkpoints.db"):
         },
     )
 
+    # ── Retrieval sub-graph ───────────────────────────────────────────────────
     graph.add_conditional_edges(
         "agent_node",
-        agent_routing, # Run this only if agent_node was called in previous step
+        agent_routing,
         {
             "retrieval": "retrieval",
             "relevancy_check": "relevancy_check",
@@ -532,8 +646,10 @@ def build_graph(db_path: str = "checkpoints.db"):
     )
     graph.add_edge("query_rewrite", "agent_node")
 
+    # ── Answer → cache storage → summary → END ────────────────────────────────
     graph.add_edge("verify_claim", "generate_answer")
-    graph.add_edge("generate_answer", "maybe_summarize")
+    graph.add_edge("generate_answer", "store_to_cache")    # was: maybe_summarize
+    graph.add_edge("store_to_cache", "maybe_summarize")    # NEW
     graph.add_edge("maybe_summarize", END)
 
     return graph.compile(checkpointer=checkpointer)

@@ -10,87 +10,54 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5}(?:v\d+)?)")
 
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = 400
+CHUNK_OVERLAP = 200
 
 _splitter = RecursiveCharacterTextSplitter(
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP,
-    add_start_index=True,
-)
+    chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, add_start_index=True
+) # This splitter is for text based documents
 _md_splitter = RecursiveCharacterTextSplitter.from_language(
-    "markdown",
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP,
-    add_start_index=True,
-)
+    "markdown", chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, add_start_index=True
+) # This splitter is for markdown based documents which will split on the basis of document structure
 
-
-def _stamp_metadata(docs: list[Document], file_name: str, title: str) -> list[Document]:
+# Using this we are making sure that the document metadata tile contains title, used to track list of document added to vector store
+def _stamp_title(docs: list[Document], title: str) -> list[Document]:
     for doc in docs:
-        doc.metadata["file_name"] = file_name
-        doc.metadata["source"] = file_name
         doc.metadata["title"] = title
     return docs
 
 
-def load_pdf(file_path: str, original_filename: str | None = None) -> list[Document]:
-    raw_docs = PyMuPDFLoader(file_path).load()
-    name = original_filename or Path(file_path).name
-    stem = Path(name).stem
-
-    # Preserve 1-indexed page number and filename
-    for doc in raw_docs:
-        page_idx = doc.metadata.get("page", 0)
-        doc.metadata["page"] = int(page_idx) + 1 if isinstance(page_idx, (int, float)) else 1
-        doc.metadata["file_name"] = name
-        doc.metadata["source"] = name
-        doc.metadata["title"] = stem
-
-    split_chunks = _splitter.split_documents(raw_docs)
-    for chunk in split_chunks:
-        chunk.metadata["file_name"] = name
-        chunk.metadata["source"] = name
-        chunk.metadata["title"] = stem
-
-    return split_chunks
+def load_pdf(file_path: str) -> list[Document]:
+    docs = PyMuPDFLoader(file_path).load()
+    return _stamp_title(_splitter.split_documents(docs), Path(file_path).stem)
 
 
-def load_text(file_path: str, original_filename: str | None = None) -> list[Document]:
+def load_text(file_path: str) -> list[Document]:
     docs = TextLoader(file_path, encoding="utf-8").load()
-    name = original_filename or Path(file_path).name
-    stem = Path(name).stem
-    for doc in docs:
-        doc.metadata["page"] = 1
-    chunks = _splitter.split_documents(docs)
-    return _stamp_metadata(chunks, name, stem)
+    return _stamp_title(_splitter.split_documents(docs), Path(file_path).stem)
 
 
-def load_markdown(file_path: str, original_filename: str | None = None) -> list[Document]:
+def load_markdown(file_path: str) -> list[Document]:
     docs = TextLoader(file_path, encoding="utf-8").load()
-    name = original_filename or Path(file_path).name
-    stem = Path(name).stem
-    for doc in docs:
-        doc.metadata["page"] = 1
-    chunks = _md_splitter.split_documents(docs)
-    return _stamp_metadata(chunks, name, stem)
+    return _stamp_title(_md_splitter.split_documents(docs), Path(file_path).stem)
 
 
 def load_webpage(url: str) -> list[Document]:
     docs = WebBaseLoader(url, requests_kwargs={"timeout": 30}).load()
     title = (docs[0].metadata.get("title") or url) if docs else url
-    chunks = _splitter.split_documents(docs)
-    return _stamp_metadata(chunks, url, title)
+    return _stamp_title(_splitter.split_documents(docs), title)
 
-
+# Extracts arxiv id from query
 def _extract_arxiv_id(query: str) -> str | None:
+    """Return bare ArXiv ID (no version suffix) if one appears in the query."""
     m = _ARXIV_ID_RE.search(query)
     if m:
         return re.sub(r"v\d+$", "", m.group(1))
     return None
 
-
+# Fetch paper title by ID from the ArXiv Atom API.
 def _arxiv_api_lookup(arxiv_id: str) -> str:
+    """Fetch paper title by ID from the ArXiv Atom API."""
     url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
     with urllib.request.urlopen(url, timeout=10) as resp:
         xml = resp.read().decode()
@@ -99,6 +66,7 @@ def _arxiv_api_lookup(arxiv_id: str) -> str:
 
 
 def _arxiv_search(query: str) -> str:
+    """Search ArXiv Atom API by title phrase and return the top result's bare paper ID."""
     phrase = query.strip('"')
     search_query = urllib.parse.quote(f'ti:"{phrase}"')
     url = f"https://export.arxiv.org/api/query?search_query={search_query}&max_results=1&sortBy=relevance"
@@ -111,6 +79,7 @@ def _arxiv_search(query: str) -> str:
 
 
 def _load_arxiv_by_id(arxiv_id: str) -> list[Document]:
+    """Download and chunk an ArXiv paper PDF by its bare ID."""
     pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
     with urllib.request.urlopen(pdf_url, timeout=60) as resp:
         pdf_bytes = resp.read()
@@ -123,15 +92,7 @@ def _load_arxiv_by_id(arxiv_id: str) -> list[Document]:
         if not docs:
             raise ValueError(f"Could not load PDF for ArXiv ID: {arxiv_id}")
         title = (docs[0].metadata.get("title") or "").strip() or _arxiv_api_lookup(arxiv_id)
-        name = f"arxiv_{arxiv_id}.pdf"
-        for doc in docs:
-            page_idx = doc.metadata.get("page", 0)
-            doc.metadata["page"] = int(page_idx) + 1 if isinstance(page_idx, (int, float)) else 1
-            doc.metadata["file_name"] = name
-            doc.metadata["source"] = name
-            doc.metadata["title"] = title
-        chunks = _splitter.split_documents(docs)
-        return _stamp_metadata(chunks, name, title)
+        return _stamp_title(_splitter.split_documents(docs), title)
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
@@ -142,16 +103,15 @@ def load_arxiv(query: str) -> list[Document]:
     return _load_arxiv_by_id(arxiv_id)
 
 
-def load_document(source: str, original_filename: str | None = None) -> list[Document]:
+def load_document(source: str) -> list[Document]:
     """Dispatch to the appropriate loader based on URL prefix or file extension."""
     if source.startswith(("http://", "https://")):
         return load_webpage(source)
-    target_name = original_filename or source
-    ext = Path(target_name).suffix.lower()
+    ext = Path(source).suffix.lower()
     if ext == ".pdf":
-        return load_pdf(source, original_filename=target_name)
+        return load_pdf(source)
     if ext == ".txt":
-        return load_text(source, original_filename=target_name)
+        return load_text(source)
     if ext in (".md", ".markdown"):
-        return load_markdown(source, original_filename=target_name)
+        return load_markdown(source)
     raise ValueError(f"Unsupported file type: {ext}")
